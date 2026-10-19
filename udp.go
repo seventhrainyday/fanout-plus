@@ -16,6 +16,10 @@ import (
 
 const udpIdleTimeout = 60 * time.Second
 
+// udpMaxSessions 是单个 UDP ASSOCIATE 允许同时存在的目标会话上限。
+// 不设上限的话，一个客户端可以无限制建隧道内 socket 耗尽资源。
+const udpMaxSessions = 256
+
 // udpSession 一条 (客户端, 目标) 对应的隧道内 UDP socket。
 type udpSession struct {
 	conn   net.Conn
@@ -51,6 +55,14 @@ func serveUDPAssociate(client net.Conn, dial func(network, addr string) (net.Con
 		_ = relay.Close()
 	}()
 
+	// 记下已认证 TCP 控制连接的来源 IP：UDP 包只接受从这个 IP 来的。
+	// 中继端口是认证成功后才告知的临时端口，但不绑定来源的话，
+	// 任何能扫到该端口的人都能绕过认证直接用这条隧道的中继。
+	var clientIP net.IP
+	if ra, ok := client.RemoteAddr().(*net.TCPAddr); ok && ra.IP != nil {
+		clientIP = ra.IP
+	}
+
 	var mu sync.Mutex
 	sessions := make(map[string]*udpSession)
 	defer func() {
@@ -69,8 +81,16 @@ func serveUDPAssociate(client net.Conn, dial func(network, addr string) (net.Con
 		if err != nil {
 			return
 		}
+		// 来源 IP 必须与认证时的 TCP 连接一致，否则丢弃
+		if clientIP != nil && !src.IP.Equal(clientIP) {
+			continue
+		}
 		atyp, addrBytes, host, port, payload, ok := parseUDPReqHeader(buf[:n])
 		if !ok {
+			continue
+		}
+		// 空目标没有意义，直接丢弃
+		if host == "" || port == 0 {
 			continue
 		}
 		dest := net.JoinHostPort(host, strconv.Itoa(int(port)))
@@ -79,6 +99,10 @@ func serveUDPAssociate(client net.Conn, dial func(network, addr string) (net.Con
 		mu.Lock()
 		s := sessions[key]
 		if s == nil {
+			if len(sessions) >= udpMaxSessions {
+				mu.Unlock()
+				continue
+			}
 			mu.Unlock()
 			conn, derr := dial("udp", dest)
 			if derr != nil {
@@ -88,6 +112,11 @@ func serveUDPAssociate(client net.Conn, dial func(network, addr string) (net.Con
 			if s2 := sessions[key]; s2 != nil {
 				_ = conn.Close()
 				s = s2
+			} else if len(sessions) >= udpMaxSessions {
+				// 并发建连时二次检查，避免同时超限
+				_ = conn.Close()
+				mu.Unlock()
+				continue
 			} else {
 				s = &udpSession{conn: conn, client: src, atyp: atyp, addr: addrBytes, port: port}
 				sessions[key] = s
@@ -164,8 +193,12 @@ func parseUDPReqHeader(b []byte) (atyp byte, addrBytes []byte, host string, port
 
 // buildUDPRespHeader 组装回给客户端的 SOCKS5 UDP 包头。
 func buildUDPRespHeader(atyp byte, addrBytes []byte, port uint16, data []byte) []byte {
-	head := make([]byte, 0, 4+len(addrBytes)+2)
+	head := make([]byte, 0, 4+len(addrBytes)+3)
 	head = append(head, 0, 0, 0, atyp)
+	if atyp == atypDomain {
+		// RFC1928：域名地址是 1 字节长度 + 域名；parse 时只存了域名本身，这里补回长度
+		head = append(head, byte(len(addrBytes)))
+	}
 	head = append(head, addrBytes...)
 	head = append(head, byte(port>>8), byte(port))
 	return append(head, data...)

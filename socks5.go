@@ -174,6 +174,10 @@ func socksReadRequestWithCmd(c net.Conn) (byte, string, error) {
 	if _, err := io.ReadFull(c, head); err != nil {
 		return 0, "", err
 	}
+	// RSV 保留字段必须为 0：畸形探测包直接拒掉
+	if head[2] != 0x00 {
+		return 0, "", fmt.Errorf("保留字段非零")
+	}
 	switch head[1] {
 	case cmdConnect, cmdUDPAssociate:
 	default:
@@ -199,6 +203,9 @@ func socksReadRequestWithCmd(c net.Conn) (byte, string, error) {
 		l := make([]byte, 1)
 		if _, err := io.ReadFull(c, l); err != nil {
 			return 0, "", err
+		}
+		if l[0] == 0 {
+			return 0, "", fmt.Errorf("空域名")
 		}
 		b := make([]byte, int(l[0]))
 		if _, err := io.ReadFull(c, b); err != nil {

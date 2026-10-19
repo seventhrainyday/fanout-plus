@@ -4,7 +4,6 @@ import (
 	"encoding/base64"
 	"encoding/csv"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
@@ -121,7 +120,7 @@ func fetchNodesFrom(url, key string, timeout time.Duration) ([]Node, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("拉取节点列表失败: HTTP %d", resp.StatusCode)
 	}
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := readBodyLimited(resp, maxNodeListBytes)
 	if err != nil {
 		return nil, fmt.Errorf("读取节点列表失败: %w", err)
 	}

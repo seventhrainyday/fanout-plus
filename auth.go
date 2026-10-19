@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -140,9 +141,42 @@ func (a *Auth) valid(tok string) bool {
 
 const sessionCookie = "fanout_session"
 
+// setSecurityHeaders 给管理界面所有响应加安全头。
+// 面板常年跑在公网端口上，缺这几个头等于把点击劫持和 MIME 嗅探的门敞开。
+func setSecurityHeaders(w http.ResponseWriter) {
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	// 登录态与 API 响应不许进任何缓存，避免口令/会话残留在代理或磁盘缓存里
+	w.Header().Set("Cache-Control", "no-store")
+}
+
+// isCrossSitePOST 判断是否为跨站 POST（CSRF 探测）。
+// 面板通常直接用 IP:端口访问：同源请求要么不带 Origin，要么 Origin 的
+// host 与请求 host 一致；跨站表单/页面偷偷提交会带上攻击站点的 Origin。
+// Fetch Metadata 头（Sec-Fetch-Site）是更可靠的信号，优先采用。
+func isCrossSitePOST(r *http.Request) bool {
+	if r.Method != http.MethodPost {
+		return false
+	}
+	if sfs := r.Header.Get("Sec-Fetch-Site"); sfs != "" {
+		return sfs == "cross-site"
+	}
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return false // 老客户端/非浏览器请求不带 Origin，不误杀
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return true
+	}
+	return !strings.EqualFold(u.Host, r.Host)
+}
+
 // Wrap 保护一个 handler，未登录时 API 返回 401、页面跳登录。
 func (a *Auth) Wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		setSecurityHeaders(w)
 		if r.URL.Path == "/login" {
 			a.handleLogin(w, r)
 			return
@@ -227,6 +261,12 @@ func (a *Auth) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "登录失败次数过多，请稍后再试"})
 		return
 	}
+	// 跨站 POST 直接拒绝：挡掉恶意网页偷偷往面板提交登录表单的 CSRF。
+	// 注意是"拒绝"而不是"记失败次数"，避免攻击者顺手把正常用户锁在冷却期外。
+	if isCrossSitePOST(r) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "跨站请求被拒绝"})
+		return
+	}
 	if !a.check(r.FormValue("password")) {
 		a.recordFail(ip)
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "口令不对"})
@@ -244,7 +284,9 @@ func (a *Auth) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		MaxAge:   int(sessionTTL.Seconds()),
+		// 面板套了 HTTPS 反代时，Secure 防止会话 Cookie 被明文连接带出去
+		Secure: r.TLS != nil,
+		MaxAge: int(sessionTTL.Seconds()),
 	})
 	writeJSON(w, http.StatusOK, map[string]string{"ok": "已登录"})
 }

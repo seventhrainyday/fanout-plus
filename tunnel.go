@@ -224,6 +224,11 @@ func (t *Tunnel) teardownNetns() {
 // startOpenVPN 在 netns 内拉起 openvpn，并等待 tun0 拿到地址。
 func (t *Tunnel) startOpenVPN(dir string) error {
 	ns := t.nsName()
+	// 配置来自公网节点源，先过安全校验再落盘：恶意配置里的 up/down
+	// 脚本、plugin 等指令一旦被 root 身份的 openvpn 执行就是提权。
+	if err := validateOvpnConfig(t.Node.Config); err != nil {
+		return fmt.Errorf("节点配置未通过安全校验: %w", err)
+	}
 	cfgPath := filepath.Join(dir, ns+".ovpn")
 	if err := os.WriteFile(cfgPath, []byte(t.Node.Config), 0600); err != nil {
 		return fmt.Errorf("写配置失败: %w", err)
@@ -244,6 +249,10 @@ func (t *Tunnel) startOpenVPN(dir string) error {
 		"--data-ciphers", "AES-128-CBC:AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305",
 		"--verb", "3",
 		"--log", logPath,
+		// 纵深防御：即使校验漏掉了某条脚本类指令，命令行后置的
+		// script-security 也会覆盖配置里的设置，禁止执行外部脚本。
+		// level 1 仍允许 ifconfig/ip/route 等内置网络配置，tun 能正常起来。
+		"--script-security", "1",
 	)
 	if err := cmdStart(cmd); err != nil {
 		return fmt.Errorf("启动 openvpn 失败: %w", err)

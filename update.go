@@ -233,8 +233,17 @@ func downloadFile(url, dst string) error {
 		return err
 	}
 	defer f.Close()
-	_, err = io.Copy(f, resp.Body)
-	return err
+	// 更新包限 100MB：二进制 tar 包正常几十 MB，超限说明响应异常，
+	// 不让它把磁盘写满。多 1 字节用于精确判断是否超限。
+	const maxUpdateBytes = 100<<20 + 1
+	n, err := io.Copy(f, io.LimitReader(resp.Body, maxUpdateBytes))
+	if err != nil {
+		return err
+	}
+	if n >= maxUpdateBytes {
+		return fmt.Errorf("更新包超过 100MB 上限，下载中止")
+	}
+	return nil
 }
 
 func verifyChecksum(path, name, sumsURL string) error {
