@@ -35,6 +35,14 @@ func (m *Manager) Provision(req ProvisionRequest) (*Job, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 按空闲槽位预裁剪：要 50 个但只剩 10 个槽位时，直接按 10 个开，
+	// 而不是让后面 40 条逐条报"槽位已满"。资源熔断仍在每条 Start 时动态检查。
+	if avail := m.MaxSlots() - len(m.Tunnels()); avail < len(picks) {
+		if avail <= 0 {
+			return nil, fmt.Errorf("出口已满（上限 %d），没有空闲槽位", m.MaxSlots())
+		}
+		picks = picks[:avail]
+	}
 
 	labels := make([]string, 0, len(picks)+1)
 	for _, n := range picks {
@@ -66,7 +74,7 @@ func (m *Manager) runProvision(job *Job, picks []Node, templateID int) {
 	started := make([]*Tunnel, len(picks))
 
 	for i, node := range picks {
-		t, err := m.Start(node)
+		t, err := m.startPaced(node)
 		if err != nil {
 			job.Set(i, "failed", err.Error())
 			continue
@@ -116,6 +124,26 @@ func (m *Manager) runProvision(job *Job, picks []Node, templateID int) {
 		return
 	}
 	job.Set(step, "ok", fmt.Sprintf("已创建 %d 个入站", len(ports)))
+}
+
+// provisionStartGap 是批量新建时相邻两条启动的最小间隔。
+const provisionStartGap = time.Second
+
+// startPaced 带节流的新建：同时启动不超过 2 条，相邻启动间隔至少 1 秒。
+// 批量开几十条出口时，不节流会让 openvpn 握手把小机器的 CPU 瞬间打满，
+// 反而每条都慢，甚至触发资源保护把后面的全拒了。
+func (m *Manager) startPaced(node Node) (*Tunnel, error) {
+	m.startSem <- struct{}{}
+	defer func() { <-m.startSem }()
+	m.startMu.Lock()
+	if wait := time.Until(m.lastStart.Add(provisionStartGap)); wait > 0 {
+		m.startMu.Unlock()
+		time.Sleep(wait)
+		m.startMu.Lock()
+	}
+	m.lastStart = time.Now()
+	m.startMu.Unlock()
+	return m.Start(node)
 }
 
 // waitUp 等一条隧道跑完 bringUp。bringUp 最多试 6 个候选节点，

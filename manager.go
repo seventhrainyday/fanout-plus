@@ -18,14 +18,92 @@ type Manager struct {
 	workDir  string
 	maxSlots int
 	jobs     JobStore
+	// guard 是资源保护器，nil 表示不做资源准入（只查槽位）。
+	// 重启恢复走 bringUpPersist 不经过准入：恢复的是用户已有的出口，
+	// 准入只管"新增"，避免重启后因为资源波动导致出口回不来。
+	guard *ResourceGuard
+	// 批量启动节流：同时启动不超过 2 条，相邻启动间隔至少 1 秒。
+	// openvpn 握手是重活，一起拉几十条会把小机器的 CPU 瞬间打满。
+	startSem  chan struct{}
+	startMu   sync.Mutex
+	lastStart time.Time
 }
 
 func NewManager(maxSlots int, workDir string) *Manager {
+	if maxSlots < 1 {
+		maxSlots = 1
+	}
+	if maxSlots > maxExitSlots {
+		maxSlots = maxExitSlots
+	}
 	return &Manager{
 		tunnels:  map[int]*Tunnel{},
 		workDir:  workDir,
 		maxSlots: maxSlots,
+		startSem: make(chan struct{}, 2),
 	}
+}
+
+// maxExitSlots 是出口上限的技术上限：槽位同时决定 netns 子网 10.<base>.<slot>/30，
+// slot 必须是合法的 IPv4 主机段，254 是顶。
+const maxExitSlots = 254
+
+// SetResourceGuard 挂上资源保护器。
+func (m *Manager) SetResourceGuard(g *ResourceGuard) {
+	m.mu.Lock()
+	m.guard = g
+	m.mu.Unlock()
+}
+
+// MaxSlots 返回当前出口上限。
+func (m *Manager) MaxSlots() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.maxSlots
+}
+
+// SetMaxSlots 改出口上限（1~254），面板可调，立即生效。
+// 调小不会杀掉已有隧道：只影响后续新建，超出的存量继续跑。
+func (m *Manager) SetMaxSlots(n int) error {
+	if n < 1 || n > maxExitSlots {
+		return fmt.Errorf("出口上限须在 1~%d 之间", maxExitSlots)
+	}
+	m.mu.Lock()
+	m.maxSlots = n
+	m.mu.Unlock()
+	return nil
+}
+
+// AdmissionCheck 做新建出口的准入检查：槽位 + 资源。
+// 返回 ok=false 时 reason 直接展示给用户。
+func (m *Manager) AdmissionCheck() (bool, string) {
+	m.mu.RLock()
+	used := len(m.tunnels)
+	max := m.maxSlots
+	g := m.guard
+	m.mu.RUnlock()
+	if used >= max {
+		return false, fmt.Sprintf("出口已满（上限 %d）", max)
+	}
+	if g != nil {
+		if ok, reason := g.AdmissionCheck(); !ok {
+			return false, reason
+		}
+	}
+	return true, ""
+}
+
+// startingCount 统计正在启动中的隧道数（展示用）。
+func (m *Manager) startingCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	n := 0
+	for _, t := range m.tunnels {
+		if t.Status == "starting" {
+			n++
+		}
+	}
+	return n
 }
 
 // RefreshNodes 重新拉取节点列表。
@@ -71,7 +149,11 @@ func (m *Manager) freeSlot() (int, error) {
 }
 
 // Start 为指定节点开一条隧道，返回分配到的本地端口。
+// 先过准入检查：槽位已满或资源保护熔断时直接拒绝，并告诉用户原因。
 func (m *Manager) Start(node Node) (*Tunnel, error) {
+	if ok, reason := m.AdmissionCheck(); !ok {
+		return nil, fmt.Errorf("准入检查未通过：%s", reason)
+	}
 	m.mu.Lock()
 	slot, err := m.freeSlot()
 	if err != nil {

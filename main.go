@@ -79,7 +79,46 @@ func main() {
 		log.Printf("节点链接后端: %s", p.Describe())
 	}
 
-	mgr := NewManager(*maxSlots, *workDir)
+	// 出口上限三级优先级：显式 -max > 面板存过的 capacity.json > 默认值。
+	// 显式传了 -max 每次重启都以它为准（并回写磁盘，避免面板显示与实际不一致）；
+	// 没传则沿用面板上改过的值。
+	maxExplicit := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "max" {
+			maxExplicit = true
+		}
+	})
+	maxSlotsVal, err := parseMaxFlag(*maxSlots)
+	if err != nil {
+		log.Fatal(err)
+	}
+	mgr := NewManager(maxSlotsVal, *workDir)
+	savedCap := loadCapacity(*workDir)
+	if savedCap != nil {
+		if maxExplicit {
+			// 命令行优先：把命令行值回写，面板显示一致
+			_ = mgr.applyCapacity(maxSlotsVal, nil, 0)
+		} else {
+			if savedCap.MaxSlots >= 1 && savedCap.MaxSlots <= maxExitSlots {
+				_ = mgr.SetMaxSlots(savedCap.MaxSlots)
+			}
+			maxSlotsVal = mgr.MaxSlots()
+		}
+	} else if maxExplicit {
+		_ = mgr.saveCapacity()
+	}
+	log.Printf("出口上限 %d", maxSlotsVal)
+
+	// 资源保护：后台每秒采样，CPU/内存达阈值时暂停新建出口
+	guardEnabled, guardThreshold := true, 0
+	if savedCap != nil {
+		guardEnabled, guardThreshold = savedCap.GuardEnabled, savedCap.GuardThreshold
+	}
+	guard := NewResourceGuard(guardEnabled, guardThreshold)
+	guard.Start()
+	defer guard.Stop()
+	mgr.SetResourceGuard(guard)
+
 	log.Printf("正在拉取节点列表...")
 	if n, err := mgr.RefreshNodes(); err != nil {
 		log.Printf("拉取失败（可在 Web 界面重试）: %v", err)
@@ -123,6 +162,7 @@ func main() {
 	mux.HandleFunc("/api/jobs", apiJobs(mgr))
 	mux.HandleFunc("/api/jobs/dismiss", apiJobDismiss(mgr))
 	mux.HandleFunc("/api/exits", apiExits(mgr))
+	mux.HandleFunc("/api/capacity", apiCapacity(mgr))
 	mux.HandleFunc("/api/xui", apiXUIStatus)
 	mux.HandleFunc("/api/xui/inbounds", apiXUIInbounds(mgr))
 	mux.HandleFunc("/api/xui/bind", apiXUIBind(mgr))
