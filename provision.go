@@ -173,23 +173,59 @@ func (m *Manager) pickNodes(region string, count int, avoid map[string]bool) ([]
 	}
 
 	pool := m.nodePoolLocked()
-	var out []Node
+	// 先按过滤条件收拢候选
+	var cands []Node
 	for _, n := range pool {
-		if len(out) >= count {
-			break
-		}
 		if used[n.HostName] || avoid[n.HostName] {
 			continue
 		}
 		if region != "" && !strings.EqualFold(n.CountryCode, region) {
 			continue
 		}
-		out = append(out, n)
+		cands = append(cands, n)
+	}
+	var out []Node
+	if carrierDiverse() && count > 1 {
+		// 第一遍：运营商尽量不重复（pool 已按速度降序，先遇到的是最快的）
+		seenOp := map[string]bool{}
+		var rest []Node
+		for _, n := range cands {
+			op := normOperator(n.Operator)
+			if op == "" || !seenOp[op] {
+				if len(out) < count {
+					out = append(out, n)
+					if op != "" {
+						seenOp[op] = true
+					}
+					continue
+				}
+			}
+			rest = append(rest, n)
+		}
+		// 第二遍：运营商实在不够分时，用剩下的补齐，不让用户开不出数量
+		for _, n := range rest {
+			if len(out) >= count {
+				break
+			}
+			out = append(out, n)
+		}
+	} else {
+		for _, n := range cands {
+			if len(out) >= count {
+				break
+			}
+			out = append(out, n)
+		}
 	}
 	if len(out) == 0 {
 		return nil, m.noNodesErrLocked(region, len(pool) < len(m.nodes))
 	}
 	return out, nil
+}
+
+// normOperator 归一化运营商名，用于去重比较。
+func normOperator(s string) string {
+	return strings.ToLower(strings.TrimSpace(s))
 }
 
 // pickEveryRegion 给每个有空闲节点的国家各挑 perRegion 个。

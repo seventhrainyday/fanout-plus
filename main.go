@@ -119,6 +119,9 @@ func main() {
 	defer guard.Stop()
 	mgr.SetResourceGuard(guard)
 
+	// 自定义节点来源
+	mgr.SetSourceStore(newSourceStore(*workDir))
+
 	log.Printf("正在拉取节点列表...")
 	if n, err := mgr.RefreshNodes(); err != nil {
 		log.Printf("拉取失败（可在 Web 界面重试）: %v", err)
@@ -163,6 +166,8 @@ func main() {
 	mux.HandleFunc("/api/jobs/dismiss", apiJobDismiss(mgr))
 	mux.HandleFunc("/api/exits", apiExits(mgr))
 	mux.HandleFunc("/api/capacity", apiCapacity(mgr))
+	mux.HandleFunc("/api/sources", apiSources(mgr))
+	mux.HandleFunc("/api/sources/refresh", apiSourcesRefresh(mgr))
 	mux.HandleFunc("/api/xui", apiXUIStatus)
 	mux.HandleFunc("/api/xui/inbounds", apiXUIInbounds(mgr))
 	mux.HandleFunc("/api/xui/bind", apiXUIBind(mgr))
@@ -178,6 +183,8 @@ func main() {
 	mux.HandleFunc("/api/panel/mode", apiPanelMode(*workDir))
 	mux.HandleFunc("/api/sub", apiSub)
 	mux.HandleFunc("/api/sub/reset", apiSubReset)
+	mux.HandleFunc("/api/sub/quota", apiSubQuota)
+	mux.HandleFunc("/api/xui/reset-node-creds", apiResetNodeCreds)
 	// 订阅本体走免登录（见 auth.go 的放行），口令在 handleSub 里验
 	mux.HandleFunc("/sub", handleSub(mgr))
 
@@ -864,6 +871,37 @@ func apiClientReset(m *Manager) http.HandlerFunc {
 	return clientAction(m, "已重置", func(p Panel, id int, email string, t []*Tunnel) error {
 		return p.ResetClient(id, email, t)
 	})
+}
+
+// apiResetNodeCreds 一键重置指定节点全部绑定入站的客户端凭据。
+// POST /api/xui/reset-node-creds?host=<hostname>
+// 只支持 3x-ui 后端；旧链接立即失效，适用于凭据泄露应急。
+func apiResetNodeCreds(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "只接受 POST"})
+		return
+	}
+	host := strings.TrimSpace(r.URL.Query().Get("host"))
+	if host == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "缺少 host 参数"})
+		return
+	}
+	p, err := openPanel()
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	x, ok := p.(*XUI)
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "当前节点链接后端不支持批量重置"})
+		return
+	}
+	n, err := x.ResetNodeClients(host)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"reset": n})
 }
 
 func apiInboundCreate(m *Manager) http.HandlerFunc {

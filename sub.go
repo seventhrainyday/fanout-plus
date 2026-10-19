@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -97,6 +98,36 @@ func apiSubReset(w http.ResponseWriter, r *http.Request) {
 		"path":  subPath(tok),
 		"url":   subFullURL(r, tok),
 	})
+}
+
+// apiSubQuota 订阅配额：GET 查当前值，POST 改。
+// total_gb 为 0 表示不限流量，expiry_days 为 0 表示不限时。
+// 配额只作用于新建的客户端，已有客户端不受影响。
+func apiSubQuota(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		totalGB, days := subQuota()
+		writeJSON(w, http.StatusOK, map[string]any{
+			"total_gb":    totalGB,
+			"expiry_days": days,
+		})
+	case http.MethodPost:
+		var req struct {
+			TotalGB    float64 `json:"total_gb"`
+			ExpiryDays int     `json:"expiry_days"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求解析失败: " + err.Error()})
+			return
+		}
+		if err := setSubQuota(req.TotalGB, req.ExpiryDays); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"ok": "已保存，只对新建客户端生效"})
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "仅支持 GET/POST"})
+	}
 }
 
 // subLinks 收集要放进订阅的节点链接。

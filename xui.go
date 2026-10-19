@@ -1472,6 +1472,17 @@ func newClientEntry(proto, email string) map[string]any {
 		"expiryTime": 0, "totalGB": 0, "limitIp": 0,
 		"tgId": 0, "subId": "", "reset": 0,
 	}
+	// 订阅配额：面板上配置了流量上限/有效期就带上，
+	// 同步到 3x-ui 客户端的 totalGB（字节）/ expiryTime（毫秒时间戳）。
+	// 不配则保持 0（不限），与面板默认行为一致。
+	if totalGB, days := subQuota(); totalGB > 0 || days > 0 {
+		if totalGB > 0 {
+			c["totalGB"] = int64(totalGB * 1024 * 1024 * 1024)
+		}
+		if days > 0 {
+			c["expiryTime"] = time.Now().Add(time.Duration(days) * 24 * time.Hour).UnixMilli()
+		}
+	}
 	if proto == "trojan" {
 		c["password"] = randomHex(8)
 	} else {
@@ -1481,6 +1492,70 @@ func newClientEntry(proto, email string) map[string]any {
 		c["flow"] = ""
 	}
 	return c
+}
+
+// ResetNodeClients 一键重置指定节点及其克隆入站的全部客户端凭据。
+//
+// 找到所有绑定到该 host 的入站，把每个客户端的 UUID（vless/vmess/ss）或
+// Trojan 密码换新。换完旧链接立即失效，适用于凭据泄露后的应急处理。
+// 注意：同一套客户端可能被 attach 到多个出口的入站上，重置是按入站逐个做的，
+// 每个入站里的客户端独立换新。
+func (x *XUI) ResetNodeClients(host string) (int, error) {
+	if strings.TrimSpace(host) == "" {
+		return 0, fmt.Errorf("缺少 host 参数")
+	}
+	bound, err := x.boundInbounds()
+	if err != nil {
+		return 0, err
+	}
+	list, err := x.Inbounds(nil)
+	if err != nil {
+		return 0, err
+	}
+	reset := 0
+	for _, ib := range list {
+		if bound[ib.Tag] != host {
+			continue
+		}
+		n, rerr := x.resetInboundClients(ib.ID)
+		if rerr != nil {
+			return reset, fmt.Errorf("入站 %d: %w", ib.ID, rerr)
+		}
+		reset += n
+	}
+	if reset == 0 {
+		return 0, fmt.Errorf("没有找到绑定到 %s 的入站", host)
+	}
+	return reset, nil
+}
+
+// resetInboundClients 重置一个入站里全部客户端的凭据，返回重置数量。
+func (x *XUI) resetInboundClients(id int) (int, error) {
+	count := 0
+	err := x.updateInboundRaw(id, "重置全部客户端凭据", func(p, raw map[string]any) error {
+		proto := fmt.Sprint(raw["protocol"])
+		settings, err := asObject(raw["settings"])
+		if err != nil {
+			return fmt.Errorf("解析 settings 失败: %w", err)
+		}
+		clients, _ := settings["clients"].([]any)
+		for _, c := range clients {
+			cm, ok := c.(map[string]any)
+			if !ok {
+				continue
+			}
+			if proto == "trojan" {
+				cm["password"] = randomHex(8)
+			} else {
+				cm["id"] = newUUID()
+			}
+			count++
+		}
+		settings["clients"] = clients
+		p["settings"] = mustJSON(settings)
+		return nil
+	})
+	return count, err
 }
 
 // mustJSONField 兼容字段是对象或已编码字符串两种情况，统一输出字符串。

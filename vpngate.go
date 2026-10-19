@@ -48,6 +48,11 @@ type Node struct {
 	Config      string  `json:"-"` // 解码后的 .ovpn 内容
 	// Residential 表示这是志愿者的家庭宽带，不是 VPN Gate 自己的机房服务器。
 	Residential bool `json:"residential"`
+	// Operator 是节点申报的运营商/组织（VPN Gate CSV 的 Operator 字段），
+	// 用于"同国不同运营商"策略与机构线索展示。公网来源自报，不做真实性背书。
+	Operator string `json:"operator,omitempty"`
+	// Source 是节点来源名：空表示 VPN Gate 主源，否则为自定义来源名。
+	Source string `json:"source,omitempty"`
 }
 
 // vpngate 自营服务器所在的网段。这些是学术网络里的机房机器，
@@ -191,6 +196,7 @@ func parseNodeCSV(body string) ([]Node, error) {
 			SpeedMbps:   speed / 1e6,
 			Sessions:    sessions,
 			Config:      string(cfg),
+			Operator:    strings.TrimSpace(get("Operator")),
 		})
 	}
 	if len(nodes) == 0 {

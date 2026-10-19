@@ -27,6 +27,8 @@ type Manager struct {
 	startSem  chan struct{}
 	startMu   sync.Mutex
 	lastStart time.Time
+	// srcStore 是自定义节点来源，nil 表示未初始化（测试里常见）。
+	srcStore *sourceStore
 }
 
 func NewManager(maxSlots int, workDir string) *Manager {
@@ -112,11 +114,63 @@ func (m *Manager) RefreshNodes() (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	// 自定义来源失败不阻断主源：逐条抓，坏的记错误、好的合并进来
+	if m.srcStore != nil {
+		custom := m.fetchCustomNodes()
+		nodes = mergeNodeLists(nodes, custom)
+	}
 	m.mu.Lock()
 	m.nodes = nodes
 	m.fetched = time.Now()
 	m.mu.Unlock()
 	return len(nodes), nil
+}
+
+// fetchCustomNodes 抓取所有启用的自定义来源。
+func (m *Manager) fetchCustomNodes() []Node {
+	var out []Node
+	for _, s := range m.srcStore.enabled() {
+		nodes, err := fetchSource(s)
+		if err != nil {
+			m.srcStore.markResult(s.ID, 0, firstLine(err.Error()))
+			continue
+		}
+		m.srcStore.markResult(s.ID, len(nodes), "")
+		out = append(out, nodes...)
+	}
+	return out
+}
+
+// mergeNodeLists 合并节点列表，按 HostName 去重（主源优先）。
+func mergeNodeLists(main, custom []Node) []Node {
+	seen := map[string]bool{}
+	out := make([]Node, 0, len(main)+len(custom))
+	for _, n := range main {
+		if n.HostName == "" || seen[n.HostName] {
+			continue
+		}
+		seen[n.HostName] = true
+		out = append(out, n)
+	}
+	for _, n := range custom {
+		if n.HostName == "" || seen[n.HostName] {
+			continue
+		}
+		seen[n.HostName] = true
+		out = append(out, n)
+	}
+	// 自定义来源的节点排在后面：主源按速度排过序，别打乱
+	return out
+}
+
+// Sources 返回自定义来源管理器（API 用）。
+func (m *Manager) Sources() *sourceStore { return m.srcStore }
+
+// SetSourceStore 挂上自定义来源管理器。
+func (m *Manager) SetSourceStore(st *sourceStore) {
+	m.mu.Lock()
+	m.srcStore = st
+	m.mu.Unlock()
 }
 
 func (m *Manager) Nodes() ([]Node, time.Time) {
