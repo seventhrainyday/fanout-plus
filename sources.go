@@ -64,6 +64,11 @@ type Source struct {
 	LastFetch   time.Time `json:"last_fetch,omitempty"`
 	LastCount   int       `json:"last_count"`
 	LastError   string    `json:"last_error,omitempty"`
+	// GovDeclared 表示管理员声明这是政府授权来源，GovURL 是说明链接。
+	// 程序只校验链接格式（https 且 host 含 gov），不拉取核验内容、
+	// 不核验机构身份与真实授权，通过不代表真的获得授权。
+	GovDeclared bool   `json:"gov_declared,omitempty"`
+	GovURL      string `json:"gov_url,omitempty"`
 }
 
 func sourcesPath(dir string) string { return filepath.Join(dir, "sources.json") }
@@ -158,6 +163,13 @@ func (st *sourceStore) Upsert(in Source, password string, clearPassword bool) (*
 		return nil, fmt.Errorf("国家代码须为 2 字母")
 	}
 	in.CountryCode = strings.ToUpper(in.CountryCode)
+	if in.GovDeclared {
+		if err := validateGovURL(in.GovURL); err != nil {
+			return nil, err
+		}
+	} else {
+		in.GovURL = ""
+	}
 
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -190,6 +202,7 @@ func (st *sourceStore) Upsert(in Source, password string, clearPassword bool) (*
 			s.CountryCode, s.Country = in.CountryCode, in.Country
 			s.Username = in.Username
 			s.Enabled = in.Enabled
+			s.GovDeclared, s.GovURL = in.GovDeclared, in.GovURL
 			if clearPassword {
 				delete(st.passwords, s.ID)
 				s.HasPassword = false
@@ -322,7 +335,7 @@ func fetchSource(s persistedSource) ([]Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	// 统一打标：来源名与国家覆盖
+	// 统一打标：来源名、国家覆盖、机构分类
 	for i := range nodes {
 		nodes[i].Source = s.Name
 		if s.CountryCode != "" {
@@ -330,6 +343,12 @@ func fetchSource(s persistedSource) ([]Node, error) {
 			if s.Country != "" {
 				nodes[i].Country = s.Country
 			}
+		}
+		if s.GovDeclared {
+			nodes[i].GovClass = GovDeclared
+			nodes[i].GovReason = "管理员声明授权来源（说明链接未独立核验）"
+		} else if nodes[i].GovClass == "" {
+			nodes[i].GovClass, nodes[i].GovReason = classifyGov(nodes[i].HostName, nodes[i].Operator)
 		}
 	}
 	return nodes, nil
@@ -349,6 +368,7 @@ func nodeFromOvpn(cfg string, s persistedSource) (Node, error) {
 	if pip := netParseIP(host); pip != "" {
 		ip = pip
 	}
+	govClass, govReason := classifyGov(host, "")
 	return Node{
 		HostName:    host,
 		IP:          ip,
@@ -356,6 +376,8 @@ func nodeFromOvpn(cfg string, s persistedSource) (Node, error) {
 		CountryCode: s.CountryCode,
 		Config:      cfg,
 		Residential: true, // 用户自己的来源默认按家宽处理，不套用 VPN Gate 的机房判据
+		GovClass:    govClass,
+		GovReason:   govReason,
 	}, nil
 }
 
@@ -463,6 +485,7 @@ func nodesFromJSON(raw []byte, s persistedSource) ([]Node, error) {
 		if ip == "" {
 			ip = e.Hostname
 		}
+		govClass, govReason := classifyGov(e.Hostname, e.Operator)
 		nodes = append(nodes, Node{
 			HostName:    e.Hostname,
 			IP:          ip,
@@ -471,6 +494,8 @@ func nodesFromJSON(raw []byte, s persistedSource) ([]Node, error) {
 			Operator:    strings.TrimSpace(e.Operator),
 			Config:      cfg,
 			Residential: true,
+			GovClass:    govClass,
+			GovReason:   govReason,
 		})
 	}
 	if len(nodes) == 0 {
@@ -502,6 +527,8 @@ func apiSources(m *Manager) http.HandlerFunc {
 				Password      string `json:"password"`
 				ClearPassword bool   `json:"clear_password"`
 				Enabled       *bool  `json:"enabled"`
+				GovDeclared   bool   `json:"gov_declared"`
+				GovURL        string `json:"gov_url"`
 			}
 			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求解析失败: " + err.Error()})
@@ -515,6 +542,7 @@ func apiSources(m *Manager) http.HandlerFunc {
 				ID: req.ID, Name: req.Name, URL: req.URL, Kind: req.Kind,
 				CountryCode: req.CountryCode, Country: req.Country,
 				Username: req.Username, Enabled: enabled,
+				GovDeclared: req.GovDeclared, GovURL: req.GovURL,
 			}, req.Password, req.ClearPassword)
 			if err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})

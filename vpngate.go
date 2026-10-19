@@ -53,6 +53,10 @@ type Node struct {
 	Operator string `json:"operator,omitempty"`
 	// Source 是节点来源名：空表示 VPN Gate 主源，否则为自定义来源名。
 	Source string `json:"source,omitempty"`
+	// GovClass 是机构分类（suspected/declared），GovReason 是分类依据。
+	// suspected 只是关键词启发式结果，必须按"未核验"展示，不得当成实证。
+	GovClass  GovClass `json:"gov_class,omitempty"`
+	GovReason string   `json:"gov_reason,omitempty"`
 }
 
 // vpngate 自营服务器所在的网段。这些是学术网络里的机房机器，
@@ -186,17 +190,21 @@ func parseNodeCSV(body string) ([]Node, error) {
 		ping, _ := strconv.Atoi(get("Ping"))
 		speed, _ := strconv.ParseFloat(get("Speed"), 64)
 		sessions, _ := strconv.Atoi(get("NumVpnSessions"))
+		host, op := get("HostName"), strings.TrimSpace(get("Operator"))
+		govClass, govReason := classifyGov(host, op)
 		nodes = append(nodes, Node{
-			HostName:    get("HostName"),
+			HostName:    host,
 			IP:          get("IP"),
-			Residential: isResidential(get("HostName"), get("IP")),
+			Residential: isResidential(host, get("IP")),
 			Country:     get("CountryLong"),
 			CountryCode: get("CountryShort"),
 			Ping:        ping,
 			SpeedMbps:   speed / 1e6,
 			Sessions:    sessions,
 			Config:      string(cfg),
-			Operator:    strings.TrimSpace(get("Operator")),
+			Operator:    op,
+			GovClass:    govClass,
+			GovReason:   govReason,
 		})
 	}
 	if len(nodes) == 0 {

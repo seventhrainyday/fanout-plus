@@ -21,7 +21,7 @@ var sample = []Node{
 
 func TestPickNodesSkipsRunning(t *testing.T) {
 	m := mgrWith(sample, "jp1")
-	got, err := m.pickNodes("JP", 2, nil)
+	got, err := m.pickNodes("JP", 2, nil, GovFilterOff)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +32,7 @@ func TestPickNodesSkipsRunning(t *testing.T) {
 
 func TestPickNodesRegionMismatch(t *testing.T) {
 	m := mgrWith(sample, "kr1")
-	if _, err := m.pickNodes("KR", 1, nil); err == nil {
+	if _, err := m.pickNodes("KR", 1, nil, GovFilterOff); err == nil {
 		t.Fatal("KR 只有一个节点且已占用，应当报错")
 	}
 }

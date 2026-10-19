@@ -476,12 +476,12 @@ func (m *Manager) Swap(slot int) error {
 // 于是下次点换节点又从它开始试一遍，白等一轮握手超时。
 func (m *Manager) pickSwapTarget(t *Tunnel) (Node, error) {
 	avoid := t.swapAvoid()
-	picks, err := m.pickNodes(t.Node.CountryCode, 1, avoid)
+	picks, err := m.pickNodes(t.Node.CountryCode, 1, avoid, GovFilterOff)
 	if err != nil && len(avoid) > 1 {
 		// 这个地区的节点都换过一轮了。清掉历史重新开始，
 		// 总比告诉用户"没得换了"好——转一圈之后原来那些节点未必还是当初的状态。
 		t.forgetSwaps()
-		picks, err = m.pickNodes(t.Node.CountryCode, 1, t.swapAvoid())
+		picks, err = m.pickNodes(t.Node.CountryCode, 1, t.swapAvoid(), GovFilterOff)
 	}
 	if err != nil {
 		return Node{}, err

@@ -15,6 +15,8 @@ type ProvisionRequest struct {
 	TemplateID int // 3x-ui 入站模板；0 表示只开隧道不建入站
 	// EveryRegion 表示每个有节点的国家都来 Count 个，此时 Region 被忽略。
 	EveryRegion bool
+	// GovFilter 是机构筛选模式：0 不过滤，1 含疑似，2 仅疑似，3 仅管理员声明。
+	GovFilter int
 }
 
 // Provision 异步执行一次批量开出口，立刻返回作业句柄供界面轮询。
@@ -28,9 +30,9 @@ func (m *Manager) Provision(req ProvisionRequest) (*Job, error) {
 	var picks []Node
 	var err error
 	if req.EveryRegion {
-		picks, err = m.pickEveryRegion(req.Count)
+		picks, err = m.pickEveryRegion(req.Count, req.GovFilter)
 	} else {
-		picks, err = m.pickNodes(req.Region, req.Count, nil)
+		picks, err = m.pickNodes(req.Region, req.Count, nil, req.GovFilter)
 	}
 	if err != nil {
 		return nil, err
@@ -163,7 +165,7 @@ func (m *Manager) waitUp(t *Tunnel) {
 //
 // avoid 里的 hostname 一并跳过，用于"换节点"：那条路径要避开这条出口
 // 之前用过的节点，否则连点两次会在两个节点之间来回跳。传 nil 表示不额外排除。
-func (m *Manager) pickNodes(region string, count int, avoid map[string]bool) ([]Node, error) {
+func (m *Manager) pickNodes(region string, count int, avoid map[string]bool, govFilter int) ([]Node, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -180,6 +182,9 @@ func (m *Manager) pickNodes(region string, count int, avoid map[string]bool) ([]
 			continue
 		}
 		if region != "" && !strings.EqualFold(n.CountryCode, region) {
+			continue
+		}
+		if !govPass(n.GovClass, govFilter) {
 			continue
 		}
 		cands = append(cands, n)
@@ -234,7 +239,7 @@ func normOperator(s string) string {
 // 挑出来的会重复（隧道还没开起来，避让集合不会变）。
 // 总数受槽位上限约束，排不下时按地区可用数从多到少截断，
 // 保证先把节点多的大区开出来。
-func (m *Manager) pickEveryRegion(perRegion int) ([]Node, error) {
+func (m *Manager) pickEveryRegion(perRegion int, govFilter int) ([]Node, error) {
 	if perRegion < 1 {
 		perRegion = 1
 	}
@@ -253,6 +258,9 @@ func (m *Manager) pickEveryRegion(perRegion int) ([]Node, error) {
 	var order []string
 	for _, n := range pool {
 		if used[n.HostName] || n.CountryCode == "" {
+			continue
+		}
+		if !govPass(n.GovClass, govFilter) {
 			continue
 		}
 		code := strings.ToUpper(n.CountryCode)

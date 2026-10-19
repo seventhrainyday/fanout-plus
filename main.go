@@ -494,9 +494,14 @@ func apiProvision(m *Manager) http.HandlerFunc {
 				return
 			}
 		}
+		govFilter, _ := strconv.Atoi(q.Get("gov"))
+		if govFilter < 0 || govFilter > 3 {
+			govFilter = 0
+		}
 		job, err := m.Provision(ProvisionRequest{
 			Region: q.Get("region"), Count: count, TemplateID: tpl,
 			EveryRegion: q.Get("every") == "1",
+			GovFilter:   govFilter,
 		})
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})

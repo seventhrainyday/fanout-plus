@@ -33,7 +33,7 @@ func TestCarrierDiversePick(t *testing.T) {
 		{HostName: "c1", CountryCode: "JP", Operator: "", SpeedMbps: 70, Residential: true},
 	}
 	// 开关默认开
-	picks, err := m.pickNodes("JP", 3, nil)
+	picks, err := m.pickNodes("JP", 3, nil, GovFilterOff)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestCarrierDiversePick(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer setCarrierDiverse(true)
-	picks2, err := m.pickNodes("JP", 2, nil)
+	picks2, err := m.pickNodes("JP", 2, nil, GovFilterOff)
 	if err != nil {
 		t.Fatal(err)
 	}

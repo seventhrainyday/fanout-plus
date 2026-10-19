@@ -76,7 +76,7 @@ var mixed = []Node{
 func TestPickNodesSkipsHosting(t *testing.T) {
 	withResidentialOnly(t, boolPtr(true))
 	m := mgrWith(mixed)
-	got, err := m.pickNodes("JP", 2, nil)
+	got, err := m.pickNodes("JP", 2, nil, GovFilterOff)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestPickNodesSkipsHosting(t *testing.T) {
 		t.Fatalf("只应挑到 jp-home，实际 %+v", got)
 	}
 	// 整个地区都是机房时要报错，而不是退回去用机房节点
-	if _, err := m.pickNodes("KR", 1, nil); err == nil {
+	if _, err := m.pickNodes("KR", 1, nil, GovFilterOff); err == nil {
 		t.Fatal("KR 只有机房节点，开着家宽过滤时应当报错")
 	} else if !strings.Contains(err.Error(), "只用家宽") {
 		t.Fatalf("报错该提示去哪关掉这个开关，实际: %v", err)
@@ -95,7 +95,7 @@ func TestPickNodesSkipsHosting(t *testing.T) {
 func TestPickNodesIncludesHostingWhenOff(t *testing.T) {
 	withResidentialOnly(t, boolPtr(false))
 	m := mgrWith(mixed)
-	got, err := m.pickNodes("JP", 2, nil)
+	got, err := m.pickNodes("JP", 2, nil, GovFilterOff)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,11 +204,11 @@ func TestSwapHistoryResetAfterFullRound(t *testing.T) {
 	tn.rememberSwap("jp1")
 	tn.rememberSwap("jp2")
 
-	if _, err := m.pickNodes("JP", 1, tn.swapAvoid()); err == nil {
+	if _, err := m.pickNodes("JP", 1, tn.swapAvoid(), GovFilterOff); err == nil {
 		t.Fatal("三个节点都用过时应当挑不到")
 	}
 	tn.forgetSwaps()
-	got, err := m.pickNodes("JP", 1, tn.swapAvoid())
+	got, err := m.pickNodes("JP", 1, tn.swapAvoid(), GovFilterOff)
 	if err != nil {
 		t.Fatalf("清掉历史后应该又能挑: %v", err)
 	}
@@ -269,7 +269,7 @@ var manyRegions = []Node{
 func TestPickEveryRegionOnePerCountry(t *testing.T) {
 	withResidentialOnly(t, boolPtr(true))
 	m := mgrWith(manyRegions)
-	got, err := m.pickEveryRegion(1)
+	got, err := m.pickEveryRegion(1, GovFilterOff)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,7 +299,7 @@ func TestPickEveryRegionOnePerCountry(t *testing.T) {
 func TestPickEveryRegionMultiplePerCountry(t *testing.T) {
 	withResidentialOnly(t, boolPtr(true))
 	m := mgrWith(manyRegions)
-	got, err := m.pickEveryRegion(2)
+	got, err := m.pickEveryRegion(2, GovFilterOff)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -321,7 +321,7 @@ func TestPickEveryRegionRespectsSlots(t *testing.T) {
 	withResidentialOnly(t, boolPtr(true))
 	m := NewManager(2, t_tmpdir)
 	m.nodes = manyRegions
-	got, err := m.pickEveryRegion(1)
+	got, err := m.pickEveryRegion(1, GovFilterOff)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -339,7 +339,7 @@ func TestPickEveryRegionSlotsFull(t *testing.T) {
 	m := NewManager(1, t_tmpdir)
 	m.nodes = manyRegions
 	m.tunnels[1] = &Tunnel{Slot: 1, Node: manyRegions[0], Status: "up"}
-	if _, err := m.pickEveryRegion(1); err == nil {
+	if _, err := m.pickEveryRegion(1, GovFilterOff); err == nil {
 		t.Fatal("槽位满了应当报错并说清楚怎么办")
 	} else if !strings.Contains(err.Error(), "槽位") {
 		t.Fatalf("报错要点明是槽位满了，实际: %v", err)
@@ -350,7 +350,7 @@ func TestPickEveryRegionSlotsFull(t *testing.T) {
 func TestPickEveryRegionSkipsRunning(t *testing.T) {
 	withResidentialOnly(t, boolPtr(true))
 	m := mgrWith(manyRegions, "jp1", "kr1")
-	got, err := m.pickEveryRegion(1)
+	got, err := m.pickEveryRegion(1, GovFilterOff)
 	if err != nil {
 		t.Fatal(err)
 	}
