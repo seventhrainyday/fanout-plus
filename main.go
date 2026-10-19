@@ -94,6 +94,18 @@ func main() {
 	}
 	mgr := NewManager(maxSlotsVal, *workDir)
 	savedCap := loadCapacity(*workDir)
+
+	// 资源保护器先挂上：后面的 saveCapacity 要读它的开关与阈值落盘，
+	// 顺序反了会把"未初始化"当成"已关闭"写进去。
+	guardEnabled, guardThreshold := true, 0
+	if savedCap != nil {
+		guardEnabled, guardThreshold = savedCap.GuardEnabled, savedCap.GuardThreshold
+	}
+	guard := NewResourceGuard(guardEnabled, guardThreshold)
+	guard.Start()
+	defer guard.Stop()
+	mgr.SetResourceGuard(guard)
+
 	if savedCap != nil {
 		if maxExplicit {
 			// 命令行优先：把命令行值回写，面板显示一致
@@ -103,21 +115,12 @@ func main() {
 				_ = mgr.SetMaxSlots(savedCap.MaxSlots)
 			}
 			maxSlotsVal = mgr.MaxSlots()
+			_ = mgr.saveCapacity()
 		}
 	} else if maxExplicit {
 		_ = mgr.saveCapacity()
 	}
 	log.Printf("出口上限 %d", maxSlotsVal)
-
-	// 资源保护：后台每秒采样，CPU/内存达阈值时暂停新建出口
-	guardEnabled, guardThreshold := true, 0
-	if savedCap != nil {
-		guardEnabled, guardThreshold = savedCap.GuardEnabled, savedCap.GuardThreshold
-	}
-	guard := NewResourceGuard(guardEnabled, guardThreshold)
-	guard.Start()
-	defer guard.Stop()
-	mgr.SetResourceGuard(guard)
 
 	// 自定义节点来源
 	mgr.SetSourceStore(newSourceStore(*workDir))
